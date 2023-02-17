@@ -26,6 +26,7 @@
 (require 'elpaca-ui)
 (defvar elpaca-log-buffer "*elpaca-log*")
 (defvar elpaca-log--history nil "`elpaca-log' minibuffer history.")
+(defvar elpaca--queue)
 
 (defcustom elpaca-log-default-search-query ".*"
   "Default query for `elpaca-log-buffer'."
@@ -47,11 +48,10 @@
 (defun elpaca-log--build-entries (entries)
   "Return a list of ENTRIES filtered to last builds."
   (cl-loop with ids = (delete-dups (mapcar #'car entries))
-           with queue-time = (elpaca-q<-time (car (last elpaca--queues)))
-           with queued = (elpaca--queued)
+           with queue-time = (current-time) ;;@FIX(elpaca-q<-time (car (last elpaca--queues)))
            for id in ids
            for package = (symbol-name id)
-           for e = (alist-get id queued)
+           for e = (elpaca-get id)
            for log = (elpaca<-log e)
            for events =
            (cl-loop
@@ -79,35 +79,34 @@
 
 (defun elpaca-log--byte-comp-warnings (entries)
   "Buttonize byte comp warnings in ENTRIES."
-  (let ((queued (elpaca--queued)))
-    (mapcar
-     (lambda (entry)
-       (if-let ((cols (cadr entry))
-                ((equal (aref cols 1) "byte-compilation"))
-                (copy (copy-tree entry))
-                (info (aref (cadr copy) 2))
-                (name (aref (cadr copy) 0))
-                (e (elpaca-alist-get (intern name) queued)))
-           (progn
-             (when (string-match-p "\\(?:Error\\|Warning\\):" info)
-               (setf (aref (cadr copy) 2) (propertize info 'face 'elpaca-failed)))
-             (when (string-match "\\(?:\\([^z-a]*?\\):\\([[:digit:]]+?\\):\\([[:digit:]]*?\\)\\):" info)
-               (let ((file (match-string 1 (aref (cadr copy) 2)))
-                     (line  (match-string 2 (aref (cadr copy) 2)))
-                     (col (match-string 3 (aref (cadr copy) 2))))
-                 (setf (aref (cadr copy) 2)
-                       (replace-match
-                        (elpaca-ui--buttonize
-                         (propertize (string-join (list file col line) ":") 'face nil)
-                         (lambda (&rest _)
-                           (elpaca-log--visit-byte-comp-warning
-                            (expand-file-name file (elpaca<-build-dir e))
-                            (string-to-number line)
-                            (string-to-number col))))
-                        nil nil (aref (cadr copy) 2)))))
-             copy)
-         entry))
-     entries)))
+  (mapcar
+   (lambda (entry)
+     (if-let ((cols (cadr entry))
+              ((equal (aref cols 1) "byte-compilation"))
+              (copy (copy-tree entry))
+              (info (aref (cadr copy) 2))
+              (name (aref (cadr copy) 0))
+              (e (elpaca-get (intern name))))
+         (progn
+           (when (string-match-p "\\(?:Error\\|Warning\\):" info)
+             (setf (aref (cadr copy) 2) (propertize info 'face 'elpaca-failed)))
+           (when (string-match "\\(?:\\([^z-a]*?\\):\\([[:digit:]]+?\\):\\([[:digit:]]*?\\)\\):" info)
+             (let ((file (match-string 1 (aref (cadr copy) 2)))
+                   (line  (match-string 2 (aref (cadr copy) 2)))
+                   (col (match-string 3 (aref (cadr copy) 2))))
+               (setf (aref (cadr copy) 2)
+                     (replace-match
+                      (elpaca-ui--buttonize
+                       (propertize (string-join (list file col line) ":") 'face nil)
+                       (lambda (&rest _)
+                         (elpaca-log--visit-byte-comp-warning
+                          (expand-file-name file (elpaca<-build-dir e))
+                          (string-to-number line)
+                          (string-to-number col))))
+                      nil nil (aref (cadr copy) 2)))))
+           copy)
+       entry))
+   entries))
 
 (defun elpaca-log--commit-info (entries)
   "Apply faces to commit info in ENTRIES."
@@ -163,8 +162,8 @@
 (defun elpaca-log--entries ()
   "Return log's `tabulated-list-entries'."
   (cl-loop
-   with queue-time = (elpaca-q<-time (car (last elpaca--queues)))
-   for (item . e) in (elpaca--queued)
+   with queue-time = (current-time);;@FIX(elpaca-q<-time (car (last elpaca--queues)))
+   for (item . e) in elpaca--queue
    for log = (elpaca<-log e)
    for package = (elpaca<-package e)
    append
@@ -201,7 +200,7 @@
   "Display `elpaca-log-buffer'.
 If FILTER is non-nil, it is used as the initial search query."
   (interactive (list (when-let ((pkg (ignore-errors (elpaca-ui-current-package)))
-                                ((alist-get pkg (elpaca--queued))))
+                                ((elpaca-get pkg)))
                        (format "^%s$|" (symbol-name pkg)))))
   (with-current-buffer (get-buffer-create elpaca-log-buffer)
     (unless (derived-mode-p 'elpaca-ui-mode)

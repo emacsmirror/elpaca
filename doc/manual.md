@@ -7,7 +7,6 @@
     - [Recipes](#recipes)
     - [Menus](#menus)
     - [Orders](#orders)
-    - [Queues](#queues)
     - [Installing Packages](#installing-packages)
 - [UI](#ui)
   - [Searching](#searching)
@@ -73,7 +72,7 @@ To install Elpaca, add the following elisp to your init.el. It must come before 
         (error "%s" (with-current-buffer buffer (buffer-string))))
     ((error) (warn "%s" err) (delete-directory repo 'recursive))))
 (require 'elpaca-autoloads)
-(add-hook 'after-init-hook #'elpaca-process-queues)
+(add-hook 'after-init-hook #'elpaca-process-queue)
 (elpaca `(,@elpaca-order))
 ```
 
@@ -143,7 +142,7 @@ Elpaca installs and activates packages asynchronously. Elpaca processes its pack
 (elpaca nil (message "First")) ; Queue First
 (message "Second") ; Second messaged
 (elpaca nil (message "Third")) ; Queue Third
-(elpaca-process-queues) ; Process queue: First messaged, Third messaged.
+(elpaca-process-queue) ; Process queue: First messaged, Third messaged.
 ```
 
 &ldquo;Second&rdquo; will be message *before* &ldquo;First&rdquo; and &ldquo;Third&rdquo;. Defer forms which are dependent on deferred forms. Wrapping the &ldquo;Second&rdquo; message in an `elpaca` declaration will fix the above example:
@@ -152,7 +151,7 @@ Elpaca installs and activates packages asynchronously. Elpaca processes its pack
 (elpaca nil (message "First"))  ; Queue First
 (elpaca nil (message "Second")) ; Queue Second
 (elpaca nil (message "Third"))  ; Queue Third
-(elpaca-process-queues) ; Process queue: First, Second, Third messaged.
+(elpaca-process-queue) ; Process queue: First, Second, Third messaged.
 ```
 
 Add any configuration which relies on `after-init-hook`, `emacs-startup-hook`, etc to `elpaca-after-init-hook` so it runs after Elpaca has activated all queued packages.
@@ -473,31 +472,13 @@ An order may also be a partial or full recipe:
     ```
 
 
-<a id="queues"></a>
-
-### Queues
-
-Elpaca installs packages asynchronously. Orders ([orders](#orders)) are automatically queued in a list. When all of a queues orders have either finished or failed Elpaca considers it &ldquo;processed&rdquo;.
-
-Queues ensure packages installation, activation, and configuration take place prior to packages in other queues. The `elpaca-queue` macro wraps calls to `elpaca`. It places orders in its *BODY* in their own queue. This is especially useful when one wants to install a package to use later on in their init file. For example, a package which implements an Elpaca menu ([menu](#menus)):
-
-```emacs-lisp
-(elpaca-queue
- (elpaca (melpulls :host github :repo "progfolio/melpulls")
-   (add-to-list 'elpaca-menu-functions #'melpulls)
-   (elpaca-update-menus #'melpulls)))
-;; Implicitly queued into a new queue.
-(elpaca menu-item-available-in-melpulls)
-```
-
-
 <a id="installing-packages"></a>
 
 ### Installing Packages
 
 -   **elpaca:** `(order &rest body)`
 
-Installs *ORDER* ([orders](#orders)) and executes *BODY* after processing ORDER&rsquo;s queue ([queue](#queues)).
+Installs *ORDER* ([orders](#orders)) and executes *BODY* after processing order queue.
 
 This macro is for programmatic use in one&rsquo;s init file. Any of the following will install the &ldquo;example&rdquo; package:
 

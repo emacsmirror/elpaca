@@ -28,7 +28,7 @@
         (error "%s" (with-current-buffer buffer (buffer-string))))
     ((error) (warn "%s" err) (delete-directory repo 'recursive))))
 (require 'elpaca-autoloads)
-(add-hook 'after-init-hook #'elpaca-process-queues)
+(add-hook 'after-init-hook #'elpaca-process-queue)
 (elpaca `(,@elpaca-order))
 
 ;; Install use-package support

@@ -67,7 +67,6 @@ Basic concepts
 * Recipes::                      The recipe format description.
 * Menus::                        Where recipes come from.
 * Orders::                       Incomplete, or custom recipes.
-* Queues::                       Order processing groups.
 * Installing Packages::
 
 UI
@@ -136,7 +135,7 @@ It then builds and activates Elpaca.
         (error "%s" (with-current-buffer buffer (buffer-string))))
     ((error) (warn "%s" err) (delete-directory repo 'recursive))))
 (require 'elpaca-autoloads)
-(add-hook 'after-init-hook #'elpaca-process-queues)
+(add-hook 'after-init-hook #'elpaca-process-queue)
 (elpaca `(,@@elpaca-order))
 @end lisp
 
@@ -233,7 +232,7 @@ Consider the following example:
 (elpaca nil (message "First")) ; Queue First
 (message "Second") ; Second messaged
 (elpaca nil (message "Third")) ; Queue Third
-(elpaca-process-queues) ; Process queue: First messaged, Third messaged.
+(elpaca-process-queue) ; Process queue: First messaged, Third messaged.
 @end lisp
 
 ``Second'' will be message @emph{before} ``First'' and ``Third''.
@@ -244,7 +243,7 @@ Wrapping the ``Second'' message in an @samp{elpaca} declaration will fix the abo
 (elpaca nil (message "First"))  ; Queue First
 (elpaca nil (message "Second")) ; Queue Second
 (elpaca nil (message "Third"))  ; Queue Third
-(elpaca-process-queues) ; Process queue: First, Second, Third messaged.
+(elpaca-process-queue) ; Process queue: First, Second, Third messaged.
 @end lisp
 
 Add any configuration which relies on @samp{after-init-hook}, @samp{emacs-startup-hook}, etc to @samp{elpaca-after-init-hook} so it runs after Elpaca has activated all queued packages.
@@ -292,7 +291,6 @@ It offers a ``burger'' package recipe:
 * Recipes::                      The recipe format description.
 * Menus::                        Where recipes come from.
 * Orders::                       Incomplete, or custom recipes.
-* Queues::                       Order processing groups.
 * Installing Packages::
 @end menu
 
@@ -669,27 +667,6 @@ For example, the following function disables recipe inheritance by default:
 @end lisp
 @end enumerate
 
-@node Queues
-@subsection Queues
-
-Elpaca installs packages asynchronously.
-Orders (@ref{Orders, , orders}) are automatically queued in a list.
-When all of a queues orders have either finished or failed Elpaca considers it ``processed''.
-
-Queues ensure packages installation, activation, and configuration take place prior to packages in other queues.
-The @samp{elpaca-queue} macro wraps calls to @samp{elpaca}. It places orders in its @emph{BODY} in their own queue.
-This is especially useful when one wants to install a package to use later on in their init file.
-For example, a package which implements an Elpaca menu (@ref{Menus, , menu}):
-
-@lisp
-(elpaca-queue
- (elpaca (melpulls :host github :repo "progfolio/melpulls")
-   (add-to-list 'elpaca-menu-functions #'melpulls)
-   (elpaca-update-menus #'melpulls)))
-;; Implicitly queued into a new queue.
-(elpaca menu-item-available-in-melpulls)
-@end lisp
-
 @node Installing Packages
 @subsection Installing Packages
 
@@ -697,7 +674,7 @@ For example, a package which implements an Elpaca menu (@ref{Menus, , menu}):
 @item elpaca
 @samp{(order &rest body)}
 @end table
-Installs @emph{ORDER} (@ref{Orders, , orders}) and executes @emph{BODY} after processing ORDER's queue (@ref{Queues, , queue}).
+Installs @emph{ORDER} (@ref{Orders, , orders}) and executes @emph{BODY} after processing order queue.
 
 This macro is for programmatic use in one's init file.
 Any of the following will install the ``example'' package:

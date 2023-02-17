@@ -49,7 +49,7 @@
                                    (cl-remove-if-not
                                     #'file-directory-p
                                     (nthcdr 2 (directory-files elpaca-builds-directory t)))
-                                   (mapcar (lambda (q) (elpaca<-build-dir (cdr q))) (elpaca--queued))
+                                   (mapcar (lambda (q) (elpaca<-build-dir (cdr q))) elpaca--queue)
                                    :test #'equal))))
     (unique    . (lambda (items) (cl-remove-duplicates items :key #'car :from-end t)))
     (random    . (lambda (items &optional limit)
@@ -306,7 +306,7 @@ If PREFIX is non-nil it is displayed before the rest of the header-line."
 (defvar-local elpaca-ui-want-tail nil "If non-nil, point is moved to end of buffer as entries are printed.")
 (defun elpaca-ui--print ()
   "Print table entries."
-  (let ((elpaca-ui--print-cache (append elpaca-ui--marked-packages (elpaca--queued))))
+  (let ((elpaca-ui--print-cache (append elpaca-ui--marked-packages elpaca--queue)))
     (tabulated-list-print 'remember-pos)
     (when elpaca-ui-want-tail (goto-char (point-max)))))
 
@@ -496,7 +496,7 @@ The current package is its sole argument."
            (deactivate-mark))))))
 
 (elpaca-ui-defmark rebuild
-  (lambda (p) (unless (or (elpaca-installed-p p) (alist-get p (elpaca--queued)))
+  (lambda (p) (unless (or (elpaca-installed-p p) (alist-get p elpaca--queue))
                 (user-error "Package %S is not installed" p))))
 
 (elpaca-ui-defmark install
@@ -507,7 +507,7 @@ The current package is its sole argument."
 
 (elpaca-ui-defmark delete
   (lambda (p) (unless (or (elpaca-installed-p p)
-                          (alist-get p (elpaca--queued))
+                          (alist-get p elpaca--queue)
                           (get-text-property (point) 'orphan-dir))
                 (user-error "Package %S is not installed" p))))
 
@@ -545,14 +545,14 @@ The current package is its sole argument."
            finally do
            (mapc #'funcall (nreverse setups))
            (mapc #'apply actions))
-  (setq elpaca--post-queues-hook '(elpaca-ui--post-execute))
-  (elpaca-process-queues (lambda (qs) (cl-remove-if-not #'elpaca-q<-elpacas qs))))
+  (setq elpaca--post-queue-hook '(elpaca-ui--post-execute))
+  (elpaca-process-queue))
 
 (defun elpaca-ui-send-input ()
   "Send input string to current process."
   (interactive)
   (if-let ((id (get-text-property (point) 'tabulated-list-id))
-           (e (alist-get id (elpaca--queued)))
+           (e (alist-get id elpaca--queue))
            (process (elpaca<-process e))
            ((process-live-p process)))
       (let* ((input (read-string (format "Send input to %S: " (process-name process)))))

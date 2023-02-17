@@ -85,11 +85,6 @@ Note a blocked process will prevent this hook from being run."
 Note blocked or failed orders will prevent this hook from being run."
   :type 'hook)
 
-(defcustom elpaca-cache-autoloads t
-  "If non-nil, cache package autoloads and load all at once.
-Results in faster start-up time."
-  :type 'boolean)
-
 (defcustom elpaca-directory (expand-file-name "elpaca" user-emacs-directory)
   "Location of the elpaca package store."
   :type 'directory)
@@ -250,19 +245,8 @@ e.g. elisp forms may be printed via `prin1'."
   (elpaca--read-file (expand-file-name "menu-items.eld" elpaca-cache-directory))
   "Cache for menu candidates.")
 
-(cl-defstruct (elpaca-q< (:constructor elpaca-q<-create)
-                         (:type list)
-                         (:copier nil)
-                         (:named))
-  "Queue to hold elpacas."
-  (type (unless after-init-time 'init))
-  (id  (if (boundp 'elpaca--queues) (length elpaca--queues) 0))
-  (processed 0)
-  (status 'incomplete)
-  (time (current-time))
-  pre post autoloads forms elpacas)
-
-(defvar elpaca--queues (list (elpaca-q<-create)) "List of elpaca queue objects.")
+(defvar elpaca--forms nil "The elpaca forms.")
+(defvar elpaca--queue nil "The elpaca queue.")
 
 (defun elpaca-merge-plists (&rest plists)
   "Return plist with set of unique keys from PLISTS.
@@ -304,10 +288,6 @@ Simplified, faster version of `alist-get'."
 (defsubst elpaca--first (obj)
   "Return `car' of OBJ if it is a list, else OBJ."
   (if (listp obj) (car obj) obj))
-
-(defsubst elpaca--q (e)
-  "Return E's Q."
-  (car (last elpaca--queues (1+ (elpaca<-queue-id e)))))
 
 ;;@TODO: clean up interface.
 ;;;###autoload
@@ -504,28 +484,21 @@ Type is `local' for a local filesystem path, `remote' for a remote URL, or nil."
            (concat (car p) h (cdr p) (when (eq host 'sourcehut) "~") repo
                    (unless (eq host 'sourcehut) ".git")))))))
 
-(cl-defstruct (elpaca< (:constructor elpaca<--create) (:type list) (:named))
-  "Order for queued processing."
-  id package item statuses
-  repo-dir build-dir mono-repo
-  files build-steps recipe siblings
-  dependencies dependents -dependencies
-  (queue-id (1- (length elpaca--queues)))
-  (queue-time (current-time))
-  (init (not after-init-time))
-  process log)
-
 (defmacro elpaca--required-arg (try info)
   "TRY to set arg. If error, fail E with INFO."
   (declare (indent 1) (debug t))
   `(condition-case err ,try
      ((error) (setq status 'struct-failed info (format ,info err)) nil)))
 
-(defun elpaca--queued (&optional n)
-  "Return list of elpacas from Nth queue.
-If N is nil return a list of all queued elpacas."
-  (if n (elpaca-q<-elpacas (nth n elpaca--queues))
-    (cl-loop for queue in elpaca--queues append (elpaca-q<-elpacas queue))))
+(cl-defstruct (elpaca< (:constructor elpaca<--create) (:type list) (:named))
+  "Order for queued processing."
+  id package item statuses
+  repo-dir build-dir mono-repo
+  files build-steps recipe siblings
+  dependencies dependents -dependencies
+  (queue-time (current-time))
+  (init (not after-init-time))
+  process log)
 
 (defsubst elpaca--mono-repo (id repo-dir)
   "Return previously queued E with REPO-DIR other than ID."
@@ -534,7 +507,7 @@ If N is nil return a list of all queued elpacas."
                         ((not (eq (elpaca<-id e) id)))
                         ((equal repo-dir (elpaca<-repo-dir e)))
                         e)))
-           (reverse (elpaca--queued))))
+           (reverse elpaca--queue)))
 
 (defun elpaca--build-steps (recipe &optional builtp clonedp mono-repo)
   "Return list of build functions for RECIPE.
@@ -578,7 +551,6 @@ BUILTP, CLONEDP, and MONO-REPO control which steps are excluded."
          (builtp (and clonedp build-dir (file-exists-p build-dir)))
          (mono-repo (when-let (((not builtp))
                                (e (elpaca--mono-repo id repo-dir))
-                               ((eq (elpaca<-queue-id e) (elpaca-q<-id (car elpaca--queues))))
                                ((not (memq 'ref-checked-out (elpaca<-statuses e)))))
                       (setq status 'blocked info (concat "Waiting on monorepo " repo-dir))
                       (cl-pushnew id (elpaca<-siblings e))
@@ -619,19 +591,16 @@ If REPLACE is non-nil, E's log is updated instead of appended.
 If VERBOSITY is non-nil, log event is given that verbosity number.
 If STATUS is non-nil and is not E's current STATUS, signal E's depedentents to
 check (and possibly change) their statuses."
-  (when-let (((and status (not (eq status (elpaca--status e)))))
-             (queued (elpaca--queued)))
+  (when-let (((and status (not (eq status (elpaca--status e))))))
     (push status (elpaca<-statuses e))
     (when (memq status '(finished failed blocked))
-      (mapc (lambda (d) (elpaca--check-status (elpaca-alist-get d queued)))
-            (elpaca<-dependents e)))
+      (mapc (lambda (d) (elpaca--check-status (elpaca-get d))) (elpaca<-dependents e)))
     (when (eq status 'failed) (elpaca-log "#unique !finished")))
   (when-let ((siblings (elpaca<-siblings e))
              (statuses (elpaca<-statuses e))
              ((or (memq 'ref-checked-out statuses) (memq 'queueing-deps statuses)))
-             (queued (elpaca--queued))
              (sibling t))
-    (while (setq sibling (alist-get (pop (elpaca<-siblings e)) queued))
+    (while (setq sibling (alist-get (pop (elpaca<-siblings e)) elpaca--queue))
       (push 'ref-checked-out     (elpaca<-statuses sibling))
       (push 'unblocked-mono-repo (elpaca<-statuses sibling))
       (elpaca--continue-build sibling)))
@@ -648,14 +617,23 @@ check (and possibly change) their statuses."
 (defun elpaca--fail (e &optional reason)
   "Fail E for REASON."
   (unless (eq (elpaca--status e) 'failed)
-    (let ((q (elpaca--q e)))
-      (setf (elpaca-q<-forms q) (assq-delete-all (elpaca<-id e) (elpaca-q<-forms q))))
     (elpaca--signal e reason 'failed)
     (elpaca--finalize e)))
 
+(defun elpaca--finalize (e)
+  "Declare E finished or failed."
+  (condition-case err
+      (eval `(progn ,@(reverse (elpaca-alist-get (elpaca<-id e) elpaca--forms)) t))
+    ((error) (elpaca--fail e (format "Configuration error: %S" err))))
+  (unless (eq (elpaca--status e) 'failed)
+    (elpaca--signal
+     e (concat  "✓ " (format-time-string "%s.%3N" (elpaca--log-duration e)) " secs")
+     'finished))
+  (when (cl-every #'elpaca-processed-p (mapcar #'cdr elpaca--queue)) (elpaca--finalize-queue)))
+
 (defun elpaca-get (item)
   "Return queued E associated with ITEM."
-  (elpaca-alist-get item (elpaca--queued)))
+  (elpaca-alist-get item elpaca--queue))
 
 (defun elpaca--run-build-commands (commands)
   "Run build COMMANDS."
@@ -683,79 +661,32 @@ Optional ARGS are passed to `elpaca--signal', which see."
   "Return E's log duration."
   (time-subtract (nth 1 (car (elpaca<-log e))) (elpaca<-queue-time e)))
 
-;;;###autoload
-(defun elpaca-split-queue (&rest args)
-  "Split remaining elpacas into new queue with ARGS."
-  (let ((current (car elpaca--queues)))
-    (unless (or (elpaca-q<-elpacas current) (elpaca-q<-forms current))
-      (pop elpaca--queues)))
-  (push (apply #'elpaca-q<-create args) elpaca--queues)
-  nil)
-
-;;;###autoload
-(defmacro elpaca-queue (&rest body)
-  "Execute BODY in new queue with [KEY VAL...] args.
-Accepted KEYS are :pre and :post which are hooks run around queue processing."
-  (declare (debug t))
-  (let* ((pre (when-let ((found (memq :pre body)))
-                (butlast found (- (length found) 2))))
-         (post (when-let ((found (memq :post body)))
-                 (butlast found (- (length found) 2)))))
-    (while (keywordp (car body)) (pop body) (pop body))
-    `(progn
-       (apply #'elpaca-split-queue ',(append pre post))
-       ,@body
-       (elpaca-split-queue))))
-
-(defvar elpaca--post-queues-hook nil)
-(defun elpaca--finalize-queue (q)
+(defvar elpaca--post-queue-hook nil "Private hook run after queue processed.")
+(defun elpaca--finalize-queue ()
   "Run Q's post isntallation functions:
 - load cached autoloads
 - evaluate deferred package configuration forms
 - possibly run `elpaca-after-init-hook'."
-  (when-let ((autoloads (elpaca-q<-autoloads q)))
-    (condition-case-unless-debug err
-        (eval `(progn ,@autoloads) t)
-      ((error) (warn "Autoload Error: %S" err))))
-  (cl-loop with forms = (reverse (elpaca-q<-forms q))
-           for (item . body) in forms
-           do (condition-case-unless-debug err
-                  (eval `(progn ,@body) t)
-                ((error) (warn "Package Config Error %s: %S" item err))))
-  (when-let ((post (elpaca-q<-post q))) (funcall post))
   (run-hooks 'elpaca-post-queue-hook)
-  (setf (elpaca-q<-status q) 'complete)
-  (let ((next (nth (1+ (elpaca-q<-id q)) (reverse elpaca--queues))))
-    (unless (or elpaca-after-init-time ; Already run.
-                elpaca--waiting ; Won't know if final queue until after waiting.
-                (not (eq (elpaca-q<-type q) 'init)) ; Already run.
-                (and next (eq (elpaca-q<-type next) 'init))) ; More init queues.
-      (elpaca-split-queue)
-      (remove-variable-watcher 'initial-buffer-choice #'elpaca--set-ibc)
-      (setq elpaca-after-init-time (current-time))
-      (run-hooks 'elpaca-after-init-hook))
-    (if next (elpaca--process-queue next)
-      (run-hooks 'elpaca--post-queues-hook))))
+  (unless (or elpaca-after-init-time elpaca--waiting)
+    (remove-variable-watcher 'initial-buffer-choice #'elpaca--set-ibc)
+    (setq elpaca-after-init-time (current-time))
+    (run-hooks 'elpaca-after-init-hook))
+  (run-hooks 'elpaca--post-queue-hook))
 
-(defun elpaca--finalize (e)
-  "Declare E finished or failed."
-  (unless (eq (elpaca--status e) 'failed)
-    (elpaca--signal
-     e (concat  "✓ " (format-time-string "%s.%3N" (elpaca--log-duration e)) " secs")
-     'finished))
-  (when-let ((q (elpaca--q e))
-             ((= (cl-incf (elpaca-q<-processed q)) (length (elpaca-q<-elpacas q)))))
-    (elpaca--finalize-queue q)))
+(defun elpaca-processed-p (e)
+  "Return non-nil if E has been processed."
+  (memq (elpaca--status e) '(finished failed)))
 
 (defun elpaca--queue (item)
-  "Queue (ITEM . e) in `elpaca--queued'. Return e."
+  "Queue (ITEM . e) in variable `elpaca--queue'. Return e."
   (if (and (not after-init-time) (elpaca-get item))
       (warn "Duplicate item declaration: %S" item)
     (let* ((e (elpaca<-create item))
            (log (pop (elpaca<-log e)))
            (status (car log))
            (info (nth 2 log)))
-      (push (cons (elpaca<-id e) e) (elpaca-q<-elpacas (car elpaca--queues)))
+      (push (cons (elpaca<-id e) e) elpaca--queue)
       (if (eq status 'struct-failed)
           (elpaca--fail e info)
         (elpaca--signal e info status))
@@ -1106,11 +1037,10 @@ If RECACHE is non-nil, do not use cached dependencies."
   "Queue E's dependencies."
   (elpaca--signal e "Queueing Dependencies" 'queueing-deps)
   (if-let ((queued (cl-loop
-                    with queued = (elpaca--queued)
                     with e-id = (elpaca<-id e)
                     for (item . _) in (elpaca--dependencies e)
                     for d = (and (not (memq item elpaca-ignored-dependencies))
-                                 (or (elpaca-alist-get item queued)
+                                 (or (elpaca-get item)
                                      (elpaca--queue item)))
                     when (and d (eq (elpaca--status d) 'queued))
                     collect (prog1 d
@@ -1142,7 +1072,7 @@ If RECACHE is non-nil, do not use cached dependencies."
         (when (= (length externals) ; Our dependencies beat us to the punch
                  (cl-loop with e-id = (elpaca<-id e)
                           for dependency in externals
-                          for queued = (elpaca-alist-get dependency (elpaca--queued))
+                          for queued = (elpaca-get dependency)
                           for d = (or queued (elpaca--queue dependency))
                           for d-id = (elpaca<-id d)
                           do
@@ -1224,9 +1154,8 @@ Kick off next build step, and/or change E's status."
   (unless (eq (elpaca--status e) 'finished)
     (cl-loop with failed
              with blocked
-             with queued = (elpaca--queued)
              for dependency in (elpaca<-dependencies e)
-             for found = (elpaca-alist-get dependency queued)
+             for found = (elpaca-get dependency)
              for status = (elpaca--status found)
              unless (eq status 'finished)
              do (push dependency (if (eq status 'failed) failed blocked))
@@ -1335,36 +1264,18 @@ Async wrapper for `elpaca-generate-autoloads'."
 Adds package's build dir to `load-path'.
 Loads or caches autoloads."
   (elpaca--signal e "Activating package" 'activation)
-  (let* ((build-dir (elpaca<-build-dir e))
-         (default-directory build-dir)
+  (let* ((default-directory (elpaca<-build-dir e))
          (package           (elpaca<-package e))
          (autoloads         (expand-file-name (concat package "-autoloads.el"))))
-    (cl-pushnew build-dir load-path)
-    ;;@TODO: condition on a slot we set on the e to indicate cached recipe?
+    (cl-pushnew default-directory load-path)
     (elpaca--signal e "Package build dir added to load-path")
     (when (file-exists-p autoloads)
-      (if elpaca-cache-autoloads
-          (let ((forms nil))
-            (elpaca--signal e "Caching autoloads")
-            (with-temp-buffer
-              (insert-file-contents autoloads)
-              (goto-char (point-min))
-              (condition-case _
-                  (while t (push (read (current-buffer)) forms))
-                ((end-of-file)))
-              (push `(let ((load-file-name ,autoloads)
-                           (load-in-progress t))
-                       (condition-case err
-                           (progn ,@(nreverse forms))
-                         ((error) (warn "Error loading %S autoloads: %S" ,package err))))
-                    (elpaca-q<-autoloads (elpaca--q e))))
-            (elpaca--signal e "Autoloads cached"))
-        (condition-case err
-            (progn
-              (load autoloads nil 'nomessage)
-              (elpaca--signal e "Package activated" 'activated))
-          ((error) (elpaca--signal
-                    e (format "Failed to load %S: %S" autoloads err) 'failed-to-activate))))))
+      (condition-case err
+          (progn
+            (load autoloads nil 'nomessage)
+            (elpaca--signal e "Package activated" 'activated))
+        ((error) (elpaca--signal
+                  e (format "Failed to load %S: %S" autoloads err) 'failed-to-activate)))))
   (elpaca--continue-build e))
 
 (defun elpaca--byte-compile (e)
@@ -1414,7 +1325,7 @@ When INTERACTIVE is non-nil, message the list of dependencies."
 
 (defun elpaca--dependents (item)
   "Return list of packages which depend on ITEM."
-  (delete-dups (cl-loop for (i . _) in (elpaca--queued)
+  (delete-dups (cl-loop for (i . _) in elpaca--queue
                         when (memq item (elpaca-dependencies i)) collect i)))
 ;;;###autoload
 (defun elpaca-dependents (item &optional message)
@@ -1422,7 +1333,7 @@ When INTERACTIVE is non-nil, message the list of dependencies."
 When MESSAGE is non-nil, message the list of dependents."
   (interactive (list (elpaca--read-queued
                       "Dependents of: "
-                      (cl-remove-if-not #'elpaca--dependents (elpaca--queued) :key #'car))
+                      (cl-remove-if-not #'elpaca--dependents elpaca--queue :key #'car))
                      t))
   (if message (message "%S" (elpaca--dependents item)) (elpaca--dependents item)))
 
@@ -1434,8 +1345,7 @@ If ORDER is `nil`, defer BODY until orders have been processed."
   (declare (indent 1))
   (when (equal 'quote (car-safe order)) (setq order (cadr order)))
   `(progn
-     ,@(when body (list `(push ',(cons (elpaca--first order) body)
-                               (elpaca-q<-forms (car elpaca--queues)))))
+     ,@(when body (list `(push ',(cons (elpaca--first order) body) elpaca--forms)))
      ,@(unless (null order) (list `(elpaca--queue
                                     ,(if (equal '\` (car-safe order))
                                          order
@@ -1446,38 +1356,39 @@ If ORDER is `nil`, defer BODY until orders have been processed."
 
 (defun elpaca--dont-clear-message () "Block message clearing." 'dont-clear-message)
 ;;;###autoload
-(defun elpaca-wait ()
-  "Block until current queues processed.
-When quit with \\[keyboard-quit], running sub-processes are not stopped."
-  (when-let ((q (cl-find-if (lambda (q) (and (eq (elpaca-q<-status q) 'incomplete)
-                                             (or (elpaca-q<-elpacas q) (elpaca-q<-forms q))))
-                            elpaca--queues)))
-    (setq elpaca--waiting t)
-    (unless (or elpaca-after-init-time (not elpaca--ibs-set))
-      (elpaca-log "#unique !finished")
-      (sit-for elpaca-wait-interval))
-    (let* ((processed (elpaca-q<-processed q))
-           (id (elpaca-q<-id q))
-           (previous -1)
-           (clear-message-function #'elpaca--dont-clear-message)
-           (spec (apply #'substitute-command-keys
-                        (append (list (concat "waiting on queue " (number-to-string id)
-                                              "...%2.f%%. \\[keyboard-quit] to quit"))
-                                (unless (version< emacs-version "28.1") (list 'no-face))))))
-      (elpaca-process-queues)
-      (unwind-protect ;@TODO: Check for elpaca-after-init hook?
-          (while (not (eq (elpaca-q<-status q) 'complete))
-            (unless (= previous (setq processed (elpaca-q<-processed q) previous processed))
-              (message spec (* 100 (/ processed (float (length (elpaca-q<-elpacas q)))))))
-            (discard-input)
-            (sit-for elpaca-wait-interval))
-        (elpaca-split-queue)
-        (message spec (* 100 (/ (elpaca-q<-processed q) (float (length (elpaca-q<-elpacas q))))))
-        (setq elpaca--waiting nil)))))
+;; (defun elpaca-wait ()
+;;   "Block until current queues processed.
+;; When quit with \\[keyboard-quit], running sub-processes are not stopped."
+;;   (setq elpaca--waiting t)
+;;   (unless (or elpaca-after-init-time (not elpaca--ibs-set))
+;;     (elpaca-log "#unique !finished")
+;;     (sit-for elpaca-wait-interval))
+;;   (let* ((processed (cl-count-if
+;;          (previous -1)
+;;          (clear-message-function #'elpaca--dont-clear-message)
+;;          (spec (apply #'substitute-command-keys
+;;                       (append (list (concat "waiting on queue ...%2.f%%. \\[keyboard-quit] to quit"))
+;;                               (unless (version< emacs-version "28.1") (list 'no-face))))))
+;;     (elpaca-process-queue)
+;;     (unwind-protect ;@TODO: Check for elpaca-after-init hook?
+;;         (while (not (eq (elpaca-q<-status q) 'complete))
+;;           (unless (= previous (setq processed (elpaca-q<-processed q) previous processed))
+;;             (message spec (* 100 (/ processed (float (length (elpaca-q<-elpacas q)))))))
+;;           (discard-input)
+;;           (sit-for elpaca-wait-interval))
+;;       (elpaca-split-queue)
+;;       (message spec (* 100 (/ (elpaca-q<-processed q) (float (length (elpaca-q<-elpacas q))))))
+;;       (setq elpaca--waiting nil)))))
 
 (defun elpaca--maybe-log (condition)
   "Log when CONDITION is non-nil."
   (when condition (require 'elpaca-log) (elpaca-log--latest)))
+
+;;;###autoload
+(defun elpaca-process-queue ()
+  "Process `elpaca--queue'."
+  (unless after-init-time (setq debug-on-error elpaca--debug-init elpaca--debug-init nil))
+  (mapc #'elpaca--process (reverse elpaca--queue)))
 
 (defvar elpaca--try-package-history nil "History for `elpaca-try'.")
 (declare-function elpaca-log--latest "elpaca-log")
@@ -1501,46 +1412,27 @@ When INTERACTIVE is non-nil, immediately process ORDER, otherwise queue ORDER."
   (if (not interactive)
       (elpaca--queue (elpaca--first order))
     (elpaca--maybe-log t)
-    (elpaca-queue
-     (eval `(elpaca ,order
-              ,(when-let (((equal current-prefix-arg '(4)))
-                          ((listp order))
-                          (id (pop order)))
-                 ;;@TODO: implement as a proper menu function?
-                 ;;What would the semantics of an update be here?
-                 `(progn
-                    (setf (alist-get ',id elpaca--menu-items-cache)
-                          (list :source "elpaca-try"
-                                :description "user-provided recipe"
-                                :recipe '(:package ,(symbol-name id) ,@order)))
-                    (elpaca--write-menu-cache))))
-           t))
-    (elpaca--process-queue (nth 1 elpaca--queues)))
-  nil)
+    (eval `(elpaca ,order
+             ,(when-let (((equal current-prefix-arg '(4)))
+                         ((listp order))
+                         (id (pop order)))
+                ;;@TODO: implement as a proper menu function?
+                ;;What would the semantics of an update be here?
+                `(progn
+                   (setf (alist-get ',id elpaca--menu-items-cache)
+                         (list :source "elpaca-try"
+                               :description "user-provided recipe"
+                               :recipe '(:package ,(symbol-name id) ,@order)))
+                   (elpaca--write-menu-cache))))
+          t)
+    (elpaca-process-queue)
+    nil))
 
 (defun elpaca--process (queued)
   "Process QUEUED elpaca."
   (when-let ((e (cdr queued))
              ((eq (elpaca--status e) 'queued)))
     (elpaca--continue-build e)))
-
-(defun elpaca--process-queue (q)
-  "Process elpacas in Q."
-  (when-let ((pre (elpaca-q<-pre q))) (funcall pre))
-  (if (and (not (elpaca-q<-elpacas q)) (elpaca-q<-forms q))
-      (elpaca--finalize-queue q)
-    (mapc #'elpaca--process (reverse (elpaca-q<-elpacas q)))))
-
-;;;###autoload
-(defun elpaca-process-queues (&optional filter)
-  "Process the incomplete queues.
-FILTER must be a unary function which accepts and returns a queue list."
-  (when (not after-init-time) (setq debug-on-error elpaca--debug-init elpaca--debug-init nil))
-  (if-let ((queues (if filter (funcall filter (reverse elpaca--queues))
-                     (reverse elpaca--queues)))
-           (incomplete (cl-find 'incomplete queues :key #'elpaca-q<-status)))
-      (elpaca--process-queue incomplete)
-    (run-hooks 'elpaca--post-queues-hook)))
 
 (defun elpaca--on-disk-p (item)
   "Return t if ITEM has an associated E and a build or repo dir on disk."
@@ -1579,9 +1471,7 @@ do not confirm before deleting package and DEPS."
                        id dependents)
             (when repo-p (delete-directory repo-dir 'recursive))
             (when (file-exists-p build-dir) (delete-directory build-dir 'recursive))
-            (dolist (queue elpaca--queues)
-              (setf (elpaca-q<-elpacas queue)
-                    (cl-remove id (elpaca-q<-elpacas queue) :key #'car)))
+            (cl-delete id elpaca--queue :key #'car)
             (setf (alist-get info elpaca--repo-dirs nil 'remove) nil)
             (message "Deleted package %S" id)
             (dolist (dependency (and deps dependencies))
@@ -1595,22 +1485,15 @@ do not confirm before deleting package and DEPS."
   "Return queued E if current buffer's FILE is part of a repo, nil otherwise."
   (when-let ((name (or file (buffer-file-name))))
     (cl-find-if (lambda (e) (assoc name (elpaca--files e)))
-                (reverse (elpaca--queued)) :key #'cdr)))
+                (reverse elpaca--queue) :key #'cdr)))
 
 (defun elpaca--read-queued (&optional prompt queued)
   "Return QUEUED item.
 If PROMPT is non-nil, it is used instead of the default."
   (intern (completing-read
            (or prompt "Queued item: ")
-           (sort (cl-delete-duplicates (mapcar #'car (or queued (elpaca--queued)))) #'string<)
+           (sort (cl-delete-duplicates (mapcar #'car (or queued elpaca--queue))) #'string<)
            nil t)))
-
-(defun elpaca--unprocess (e)
-  "Mark E as unprocessed in its queue."
-  (when-let ((id (elpaca<-queue-id e))
-             (q  (nth id (reverse elpaca--queues))))
-    (when (> (elpaca-q<-processed q) 0) (cl-decf (elpaca-q<-processed q)))
-    (setf (elpaca-q<-status q) 'incomplete)))
 
 ;;;###autoload
 (defun elpaca-rebuild (item &optional interactive)
@@ -1622,7 +1505,7 @@ With a prefix argument, rebuild current file's package or prompt if none found."
                                     ((car queued))))
                          (elpaca--read-queued "Rebuild package: "))
                      t))
-  (let* ((queued (assoc item (elpaca--queued)))
+  (let* ((queued (assoc item elpaca--queue))
          (e (cdr queued)))
     (unless e (user-error "Package %S is not queued" item))
     (when (eq (elpaca--status e) 'finished)
@@ -1636,9 +1519,7 @@ With a prefix argument, rebuild current file's package or prompt if none found."
                                  elpaca--clone-dependencies
                                  elpaca--activate-package))))
     (elpaca--signal e "Rebuilding" 'rebuilding)
-    (elpaca--unprocess e)
-    (setf elpaca-cache-autoloads nil
-          (elpaca<-queue-time e) (current-time)
+    (setf (elpaca<-queue-time e) (current-time)
           (elpaca<-statuses e) (list 'queued)
           (elpaca<-files e) nil)
     (when interactive
@@ -1675,7 +1556,7 @@ With a prefix argument, rebuild current file's package or prompt if none found."
 This does not merge changes or rebuild the packages.
 If INTERACTIVE is non-nil immediately process, otherwise queue."
   (interactive (list (elpaca--read-queued "Fetch Package Updates: ") t))
-  (if-let ((queued (assoc item (elpaca--queued))))
+  (if-let ((queued (assoc item elpaca--queue)))
       (let ((e (cdr queued)))
         (elpaca--signal e "Fetching updates" 'fetching-updates)
         (setf (elpaca<-build-steps e) (list #'elpaca--fetch #'elpaca--log-updates)
@@ -1691,7 +1572,7 @@ If INTERACTIVE is non-nil immediately process, otherwise queue."
   "Fetch remote commits for queued elpacas.
 INTERACTIVE is passed to `elpaca-fetch'."
   (interactive (list t))
-  (cl-loop for (item . _) in (cl-remove-duplicates (elpaca--queued) :key #'car)
+  (cl-loop for (item . _) in (cl-remove-duplicates elpaca--queue :key #'car)
            do (elpaca-fetch item interactive)))
 
 (defun elpaca--merge-process-sentinel (process event)
@@ -1724,7 +1605,7 @@ INTERACTIVE is passed to `elpaca-fetch'."
   "Update ITEM's associated package.
 If INTERACTIVE is non-nil, the queued order is processed immediately."
   (interactive (list (elpaca--read-queued "Update package: ") t))
-  (let* ((queued (assoc item (elpaca--queued)))
+  (let* ((queued (assoc item elpaca--queue))
          (e (cdr queued))
          (recipe (elpaca<-recipe e))
          (pin (plist-get recipe :pin)))
@@ -1745,7 +1626,6 @@ If INTERACTIVE is non-nil, the queued order is processed immediately."
                    elpaca--activate-package))))
           (elpaca<-queue-time e) (current-time)
           (elpaca<-statuses e)   (list 'queued))
-    (elpaca--unprocess e)
     (when interactive
       (elpaca--maybe-log t)
       (elpaca--process queued))))
@@ -1756,15 +1636,13 @@ If INTERACTIVE is non-nil, the queued order is processed immediately."
 When INTERACTIVE, immediately process queue."
   (interactive (list t))
   (cl-loop with repos
-           for (item . e) in (reverse (elpaca--queued))
+           for (item . e) in (reverse elpaca--queue)
            for repo = (elpaca<-repo-dir e)
            if (member repo repos) do (push 'queued (elpaca<-statuses e))
            else do (push repo repos) (elpaca-update item))
-  (dolist (q elpaca--queues) (setf (elpaca-q<-status q) 'incomplete
-                                   (elpaca-q<-processed q) 0))
   (when interactive
     (elpaca--maybe-log t)
-    (elpaca-process-queues)))
+    (elpaca-process-queue)))
 
 ;;; Lockfiles
 (defun elpaca-declared-p (item)
@@ -1793,7 +1671,7 @@ When INTERACTIVE, immediately process queue."
 (defun elpaca-unshallow (item) ;;@TODO: make async?
   "Convert ITEM's repo to an unshallow repository."
   (interactive (list (elpaca--read-queued "Unshallow Package Repository: ")))
-  (when-let ((e (or (alist-get item (elpaca--queued))
+  (when-let ((e (or (alist-get item elpaca--queue)
                     (user-error "%s is not queued" item)))
              (repo-dir (or (elpaca<-repo-dir e)
                            (user-error "%s has no associated repo dir" item)))
@@ -1823,7 +1701,7 @@ When INTERACTIVE, immediately process queue."
   (elpaca--write-file path
     (pp (nreverse
          (cl-loop with seen
-                  for (item . e) in (elpaca--queued)
+                  for (item . e) in elpaca--queue
                   unless (member item seen)
                   for rev =
                   (let ((default-directory (elpaca<-repo-dir e)))
@@ -1845,7 +1723,7 @@ When INTERACTIVE, immediately process queue."
   "Set `default-directory' for duration of BODY.
 TYPE is either `:repo' or `:build' for ITEM's repo or build directory."
   (declare (indent 2) (debug t))
-  `(let* ((e (or (alist-get ,item (elpaca--queued))
+  `(let* ((e (or (alist-get ,item elpaca--queue)
                  (user-error "Not a queued item: %S" item)))
           (default-directory
            (,(intern (format "elpaca<-%s-dir" (substring (symbol-name type) 1))) e)))
@@ -1864,7 +1742,7 @@ When BUILD is non-nil visit ITEM's build directory."
   (if (not item)
       (find-file (or (and build elpaca-builds-directory)
                      (expand-file-name "./repos/" elpaca-directory)))
-    (if-let ((e (alist-get item (elpaca--queued)))
+    (if-let ((e (alist-get item elpaca--queue))
              (dir (if build (elpaca<-build-dir e) (elpaca<-repo-dir e))))
         (if (file-exists-p dir)
             (find-file dir)
@@ -1880,7 +1758,7 @@ When BUILD is non-nil visit ITEM's build directory."
 (defun elpaca--custom-candidates (&rest _)
   "Return declared candidate list with no recipe in `elpaca-menu-functions'."
   (cl-loop with seen
-           for (item . e) in (elpaca--queued)
+           for (item . e) in elpaca--queue
            unless (or (member item seen)
                       (elpaca-menu-item nil item nil nil 'no-descriptions))
            collect (list item :source "Init file"
