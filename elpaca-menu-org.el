@@ -56,11 +56,7 @@
       (org-make-org-loaddefs))
     (when (fboundp 'org-make-org-version)
       (message "Making org-version")
-      (org-make-org-version orgversion gitversion))
-    (when (fboundp 'org-make-manuals)
-      (cd "../doc")
-      (message "Making manuals")
-      (org-make-manuals))))
+      (org-make-org-version orgversion gitversion))))
 
 ;;;###autoload
 (defun elpaca-menu-org (request)
