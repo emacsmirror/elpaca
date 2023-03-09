@@ -1743,14 +1743,14 @@ If INTERACTIVE is non-nil, the queued order is processed immediately."
           (elpaca<-builtp e)     nil)
     (elpaca--unprocess e)
     (when interactive
-      (elpaca--maybe-log t "#linked-errors #update-log")
+      (elpaca--maybe-log t "#linked-errors #update-log #(last 1000)")
       (elpaca--process e))))
 
 ;;;###autoload
 (defun elpaca-update-all (&optional interactive)
   "Update all queued packages. If INTERACTIVE is non-nil, process queues."
   (interactive (list t))
-  (elpaca--map #'elpaca-update "#linked-errors #update-log" interactive))
+  (elpaca--map #'elpaca-update "#linked-errors #update-log #(last 1000)" interactive))
 
 ;;; Lockfiles
 (defun elpaca-declared-p (item)
