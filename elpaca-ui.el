@@ -14,8 +14,9 @@
 (defface elpaca-ui-marked-package
   '((t (:inherit default :weight bold :foreground "pink")))
   "Face for marked packages.")
-
+(defcustom elpaca-ui-row-limit 1000 "Max rows to print at once." :type 'integer)
 (defcustom elpaca-ui-default-query ".*" "Initial `elpaca-ui-mode' search query."
+
   :type 'string)
 (make-variable-buffer-local 'elpaca-ui-default-query)
 
@@ -107,6 +108,7 @@ exclamation point to it. e.g. #!installed."
   (let ((m (make-sparse-keymap)))
     (define-key m (kbd "RET") 'elpaca-ui-info)
     (define-key m (kbd "!") 'elpaca-ui-send-input)
+    (define-key m (kbd "+") 'elpaca-ui-show-hidden-rows)
     (define-key m (kbd "I") (elpaca-defsearch 'installed "#unique #installed"))
     (define-key m (kbd "M") (elpaca-defsearch 'marked   "#unique #marked"))
     (define-key m (kbd "O") (elpaca-defsearch 'orphaned "#unique #orphan"))
@@ -136,6 +138,7 @@ exclamation point to it. e.g. #!installed."
 It recieves one argument, the parsed search query list.")
 (defvar-local elpaca-ui-entries-function nil
   "Function responsible for returning the UI buffer's `tabulated-list-entries'.")
+(defvar-local elpaca-ui-entries nil "List of table entries.")
 (defvar-local elpaca-ui--history nil "History for `elpaca-ui' minibuffer.")
 (defvar elpaca-ui--string-cache nil "Cache for propertized strings.")
 (defvar url-http-end-of-headers)
@@ -144,18 +147,26 @@ It recieves one argument, the parsed search query list.")
 (defun elpaca-ui--header-line (&optional prefix)
   "Set `header-line-format' to reflect query.
 If PREFIX is non-nil it is displayed before the rest of the header-line."
-  (setq header-line-format
-        (list (concat
-               prefix
-               (propertize (format " (%d matches) " (length tabulated-list-entries))
-                           'face '(:weight bold))
-               " " elpaca-ui-search-filter))))
+  (let ((tlen (length tabulated-list-entries)))
+    (setq header-line-format
+          (list (concat
+                 prefix
+                 (propertize (concat " " (number-to-string tlen)
+                                     (when-let ((hidden (- (length elpaca-ui-entries)
+                                                           tlen))
+                                                ((> hidden 0)))
+                                       (elpaca-ui--buttonize
+                                        (concat "(+" (number-to-string hidden) ")")
+                                        #'elpaca-ui-show-hidden-rows))
+                                     " matching:"))
+                 " " elpaca-ui-search-filter)))))
 
 (define-derived-mode elpaca-ui-mode tabulated-list-mode "elpaca-ui"
   "Major mode to manage packages."
   (setq tabulated-list-printer #'elpaca-ui--apply-faces)
   (add-hook 'minibuffer-setup-hook 'elpaca-ui--minibuffer-setup)
   (elpaca-ui-live-update-mode 1)
+  (advice-add #'tabulated-list-print :after #'elpaca-ui--print-appender)
   (hl-line-mode))
 
 (define-minor-mode elpaca-ui-live-update-mode "Filters results as query is typed."
@@ -312,6 +323,41 @@ If PREFIX is non-nil it is displayed before the rest of the header-line."
 
 (defvar-local elpaca-ui--print-cache nil "Used when printing entries via `elpaca-ui--apply-faces'.")
 (defvar-local elpaca-ui-want-tail nil "If non-nil, point is moved to end of buffer as entries are printed.")
+
+(defun elpaca-ui--print-appender (&rest _)
+  "Prints button to append more `elpaca-ui-entries' rows."
+  (when-let (((derived-mode-p 'elpaca-ui-mode))
+             (tlen (length tabulated-list-entries))
+             (elen (length elpaca-ui-entries))
+             ((< tlen elen)))
+    (save-excursion
+      (goto-char (point-max))
+      (with-silent-modifications
+        (insert (elpaca-ui--buttonize
+                 (propertize (format "+ %d more rows..." (- elen tlen))
+                             'face '(:weight bold))
+                 #'elpaca-ui-show-hidden-rows))))))
+
+(defun elpaca-ui-show-hidden-rows (&rest _)
+  "Append rows up to `elpaca-ui-row-limit'."
+  (interactive)
+  (if-let ((tlen (length tabulated-list-entries))
+           (elen (length elpaca-ui-entries))
+           ((< tlen elen)))
+      (let ((elpaca-ui--print-cache (append elpaca-ui--marked-packages (elpaca--queued)))
+            (inhibit-read-only t))
+        (goto-char (point-max))
+        (delete-line)
+        ;; (when-let ((sorter (tabulated-list--get-sorter)))
+        ;;   (setq elpaca-ui-entries (sort elpaca-ui-entries sorter)))
+        (dotimes (i (min elpaca-ui-row-limit (- elen tlen)))
+          (when-let ((entry (nth (+ i tlen) elpaca-ui-entries)))
+            (setcdr (last tabulated-list-entries) (cons entry nil))
+            (elpaca-ui--apply-faces (car entry) (cadr entry))))
+        (elpaca-ui--print-appender)
+        (elpaca-ui--header-line elpaca-ui-header-line-prefix))
+    (user-error "No more rows to show")))
+
 (defun elpaca-ui--print ()
   "Print table entries."
   (let ((elpaca-ui--print-cache (append elpaca-ui--marked-packages (elpaca--queued))))
@@ -384,7 +430,12 @@ If QUERY is nil, the contents of the minibuffer are used instead."
       (when (string-empty-p query) (setq query elpaca-ui-default-query))
       (when-let ((parsed (elpaca-ui--parse-search query))
                  (fn (elpaca-ui--search-fn parsed)))
-        (setq tabulated-list-entries (funcall (byte-compile fn))
+        (setq elpaca-ui-entries (funcall (byte-compile fn))
+              tabulated-list-entries
+              (if-let ((elen (length elpaca-ui-entries))
+                       ((<= elen elpaca-ui-row-limit)))
+                  elpaca-ui-entries
+                (cl-subseq elpaca-ui-entries 0 (min elpaca-ui-row-limit elen)))
               elpaca-ui-search-filter query))
       (elpaca-ui--print)
       (when elpaca-ui-header-line-function
