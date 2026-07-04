@@ -80,7 +80,13 @@ Accepted key val pairs are:
 
 (defun elpaca-ui--tag-installed (entries)
   "Return ENTRIES for installed packages."
-  (cl-remove-if-not #'elpaca-installed-p entries :key #'caar))
+  (cl-remove-if-not
+   (lambda (entry) (when-let* ((e (elpaca-get (caar entry)))
+                               ((or (derived-mode-p 'elpaca-log-mode)
+                                    (equal (plist-get (elpaca<-recipe e) :source)
+                                           (aref (cadr entry) 3)))))
+                     entry))
+   entries))
 
 (defun elpaca-ui--tag-marked (entries)
   "Return ENTRIES for marked packages."
@@ -145,12 +151,12 @@ exclamation point to it. e.g. !#installed."
 (defvar elpaca-ui-view-map
   (let ((m (make-sparse-keymap)))
     (define-key m (kbd "a") (elpaca-defsearch marked "#unique #marked"))
-    (define-key m (kbd "i") (elpaca-defsearch installed "#unique #installed"))
+    (define-key m (kbd "i") (elpaca-defsearch installed "#installed"))
     (define-key m (kbd "l") 'elpaca-log)
     (define-key m (kbd "m") 'elpaca-manager)
     (define-key m (kbd "o") (elpaca-defsearch orphaned "#unique #orphan"))
     (define-key m (kbd "r") 'elpaca-ui-search-refresh)
-    (define-key m (kbd "t") (elpaca-defsearch tried "#unique #installed !#declared"))
+    (define-key m (kbd "t") (elpaca-defsearch tried "#installed !#declared"))
     m)
   "Keymap for `elpaca-ui-mode' views.")
 
@@ -259,8 +265,7 @@ If PREFIX is non-nil it is displayed before the rest of the header-line."
        beg (+ beg namelen) 'face
        (or (elpaca-alist-get (get-text-property beg 'elpaca-status) elpaca-status-faces)
            (if (or (derived-mode-p 'elpaca-log-mode)
-                   (equal (plist-get (elpaca<-recipe e) :source)
-                          (unless (equal source "Init file") source)))
+                   (equal (plist-get (elpaca<-recipe e) :source) source))
                (elpaca-alist-get (elpaca<-status e) elpaca-status-faces)
              (progn (setq noconflict nil) 'elpaca-ui-conflicting))
            '(:weight bold))))
@@ -588,7 +593,9 @@ If ADVANCEP is non-nil, move `forward-line'."
 
 (defun elpaca-ui--ensure-installed (id)
   "Throw user error if package associated with ID is not installed."
-  (unless (elpaca-installed-p id) (user-error "Package %S is not installed" id)))
+  (unless (and (elpaca-installed-p id)
+               (not (eq (get-text-property (point) 'face) 'elpaca-ui-conflicting)))
+    (user-error "%S's %S is not installed" (cdr (tabulated-list-get-id)) id)))
 
 (elpaca-ui-defmark elpaca-fetch #'elpaca-ui--ensure-installed)
 (elpaca-ui-defmark elpaca-merge #'elpaca-ui--ensure-installed)
@@ -598,10 +605,7 @@ If ADVANCEP is non-nil, move `forward-line'."
   (lambda (p) (when (elpaca-installed-p p) (user-error "Package %S already installed" p))))
 
 (elpaca-ui-defmark elpaca-delete
-  (lambda (p) (unless (or (elpaca-installed-p p)
-                          (alist-get p (elpaca--queued))
-                          (get-text-property (point) 'orphan-dir))
-                (user-error "Package %S is not installed" p))))
+  (lambda (p) (or (get-text-property (point) 'orphan-dir) (elpaca-ui--ensure-installed p))))
 
 (defvar elpaca-manager-buffer)
 (defvar elpaca-log-buffer)
