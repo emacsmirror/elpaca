@@ -532,7 +532,10 @@ If SILENT is non-nil, suppress update message."
 (defun elpaca-ui-browse-package ()
   "Browse current package's URL via `browse-url'."
   (interactive nil elpaca-ui-mode)
-  (elpaca-browse (elpaca-ui-current-package)))
+  (let ((elpaca-menu-functions (if (derived-mode-p 'elpaca-manager-mode)
+                                   (list (cdr (tabulated-list-get-id)))
+                                 elpaca-menu-functions)))
+    (elpaca-browse (elpaca-ui-current-package))))
 
 (defun elpaca-ui-visit (&optional build)
   "Visit current package's source or BUILD directory."
