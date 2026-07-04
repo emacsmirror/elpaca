@@ -354,9 +354,9 @@ Called in `jit-lock-functions', which see."
 
 (defun elpaca-ui--col-search (index queries)
   "Return columnar search for column at INDEX with QUERIES."
-  `(cl-loop for entry in entries for data = ,@(if (= index -1)
-                                                  '((string-join (cadr entry) " "))
-                                                '((cadr entry)))
+  `(cl-loop for entry in it for data = ,@(if (= index -1)
+                                             '((string-join (cadr entry) " "))
+                                           '((cadr entry)))
             when (and ,@queries) collect entry))
 
 (defun elpaca-ui--search-fn (tokens)
@@ -374,18 +374,15 @@ Called in `jit-lock-functions', which see."
          ((or (consp token) (symbolp token)) ;; elisp or tag
           (when column (setq fns (cons (elpaca-ui--col-search i column) fns) column nil))
           (let* ((sym (or (car-safe token) token))
-                 (fn (if (eq sym 'lambda)
-                         `(funcall ,token entries)
-                       `(apply (function ,(or (alist-get sym elpaca-ui-search-tags)
-                                              (user-error "%s tag not found" sym)))
-                               (list entries ,@(cdr-safe token))))))
-            (push (if negated `(cl-set-difference entries ,fn) fn) fns))))
+                 (args (cdr-safe token))
+                 (fn `(,(alist-get sym elpaca-ui-search-tags sym) ,@(or args '(it)))))
+            (push (if negated `(cl-set-difference it ,fn) fn) fns))))
    finally do (when column (push (elpaca-ui--col-search i column) fns))
    finally return (when fns
                     `(with-no-warnings
                        (lambda ()
-                         (let ((entries (funcall elpaca-ui-entries-function)))
-                           (setq ,@(cl-loop for fn in fns append `(entries ,fn)))))))))
+                         (let ((it (funcall elpaca-ui-entries-function)))
+                           (setq ,@(cl-loop for fn in fns append `(it ,fn)))))))))
 
 (define-minor-mode elpaca-ui-tail-mode "Automatically follow tail of UI buffer when enabled."
   :lighter " elpaca-ui-tail"
