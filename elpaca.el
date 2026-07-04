@@ -1981,7 +1981,7 @@ When BUILD is non-nil visit build directory."
   "Return menu ITEM REQUEST for orders with no recipe in `elpaca-menu-functions'.
 This should only ever be used as the last element of `elpaca-menu-functions'."
   (when (and elpaca-after-init-time (eq request 'index))
-    (cl-loop for (id . e) in (elpaca--queued)
+    (cl-loop for (id . e) in (reverse (elpaca--queued))
              with elpaca-menu-functions = (cl-remove 'elpaca-menu-declarations elpaca-menu-functions)
              when (not (elpaca-menu-item id))
              collect (list id :source (if (elpaca<-init e) "Init file" "User Declaration")
