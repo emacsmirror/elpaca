@@ -193,40 +193,55 @@ This is the branch that would be checked out upon cloning."
        (if (not success) (elpaca--fail e stderr)
          (seconds-to-time (string-to-number stdout)))))))
 
+(defun elpaca-git--blocker (e)
+  "Return E's queued sibling with live git subprocess."
+  (cl-loop with eid = (elpaca<-id e)
+           for (id . d) in (elpaca--queued) for p = (elpaca<-process d)
+           when (and (not (eq id eid)) p (process-live-p p)
+                     (process-get p :elpaca-git-lock)
+                     (equal (elpaca<-source-dir d) (elpaca<-source-dir e)))
+           return d))
+
+(defun elpaca-git--await-unlock (e blocker step)
+  "Reset E's STEP; block until BLOCKER's shared source dir's git lock clears."
+  (elpaca-note e (format "Waiting on %S's git lock" (elpaca<-id blocker)))
+  (push step (elpaca<-build-steps e))
+  (elpaca-block-until e 'elpaca-git--unlocked (elpaca<-source-dir e)))
+
 (defun elpaca-git--fetch (e &rest command)
   "Fetch E's remotes' commits.
 COMMAND must satisfy `elpaca--make-process' :command SPEC arg, which see."
-  (elpaca-note e "Fetching remotes")
-  (let ((default-directory (elpaca<-source-dir e)))
-    (elpaca--make-process e
-      :name "fetch"
-      :command  (or command '("git" "fetch" "--all" "-v"))
-      :sentinel (lambda (process event) (elpaca--process-sentinel "Remotes fetched" process event)))))
+  (if-let* ((blocker (elpaca-git--blocker e)))
+      (elpaca-git--await-unlock e blocker (lambda (e) (apply #'elpaca-git--fetch e command)))
+    (elpaca-note e "Fetching remotes")
+    (elpaca-with-dir e source
+      (process-put (elpaca--make-process e
+                     :name "fetch"
+                     :command  (or command '("git" "fetch" "--all" "-v"))
+                     :sentinel `(lambda (process event)
+                                  (elpaca--process-sentinel "Remotes fetched" process event)
+                                  (when (memq (process-status process) '(exit signal))
+                                    (elpaca-resolve 'elpaca-git--unlocked ,default-directory))))
+                   :elpaca-git-lock t))))
 
 (defun elpaca-git--merge-process-sentinel (process _event)
   "Handle PROCESS EVENT."
   (if-let* ((e (process-get process :elpaca))
-            ((= (process-exit-status process) 0))
-            (repo (elpaca<-source-dir e))
-            (default-directory repo))
-      (progn (when (equal (elpaca-process-output "git" "rev-parse" "HEAD")
-                          (process-get process :elpaca-git-rev))
-               (cl-loop for (_ . d) in (elpaca--queued)
-                        when (equal (elpaca<-source-dir d) repo) do
-                        (setf (elpaca<-build-steps d) nil)))
+            ((= (process-exit-status process) 0)))
+      (progn (elpaca-resolve 'elpaca-git--unlocked (elpaca<-source-dir e))
              (elpaca--propertize-subprocess process)
              (elpaca-continue e))
     (elpaca--fail e "Merge failed")))
 
 (defun elpaca-git--merge (e)
   "Merge E's fetched commits."
-  (let* ((default-directory (elpaca<-source-dir e))
-         (rev (elpaca-process-output "git" "rev-parse" "HEAD")))
-    (process-put (elpaca--make-process e
-                   :name "merge"
-                   :command  '("git" "merge" "--ff-only")
-                   :sentinel #'elpaca-git--merge-process-sentinel)
-                 :elpaca-git-rev rev)
+  (if-let* ((blocker (elpaca-git--blocker e)))
+      (elpaca-git--await-unlock e blocker #'elpaca-git--merge)
+    (elpaca-with-dir e source
+      (process-put (elpaca--make-process e :name "merge"
+                                         :command  '("git" "merge" "--ff-only")
+                                         :sentinel #'elpaca-git--merge-process-sentinel)
+                   :elpaca-git-lock t))
     (elpaca-note e "Merging updates")))
 
 (defun elpaca-git--initial-fetch (e)
