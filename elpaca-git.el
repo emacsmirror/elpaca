@@ -402,7 +402,7 @@ COMMAND must satisfy `elpaca--make-process' :command SPEC arg, which see."
       :sentinel (lambda (process event) (elpaca--process-sentinel nil process event)))))
 
 (cl-defmethod elpaca--url ((e (elpaca git)))
-  "Return :repo URL if possible."
+  "Return E's :repo URL or nil."
   (when-let* ((recipe (elpaca-merge-plists (elpaca<-recipe e) '(:protocol https)))
               (uri (replace-regexp-in-string "\\.git$" "" (elpaca-git--repo-uri recipe))))
     uri))
