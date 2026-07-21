@@ -28,6 +28,7 @@
 (defcustom elpaca-menu-org-make-manual t "When non-nil build Org manual."
   :type 'boolean :group 'elpaca)
 
+;;;###autoload
 (defun elpaca-menu-org--build (e)
   "Generate E's `org-version.el`."
   (let ((elpaca-dir (elpaca<-source-dir (elpaca-get 'elpaca))))
