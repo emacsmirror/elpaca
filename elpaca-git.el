@@ -46,7 +46,7 @@
 (defun elpaca-git--repo-type (string)
   "Return type of :repo STRING.
 Type is `local' for a local filesystem path, `remote' for a remote URL, or nil."
-  (cond ((string-match-p "^[/~]" string) 'local)
+  (cond ((string-match-p "^[\./~]" string) 'local)
         ((string-match-p ":" string) 'remote)))
 
 (defun elpaca-git-repo-dir (recipe)
@@ -381,6 +381,15 @@ COMMAND must satisfy `elpaca--make-process' :command SPEC arg, which see."
     (setf (elpaca<-build-steps e)
           (append elpaca-git-default-build-steps (elpaca<-build-steps e)))
     (elpaca-continue e)))
+
+(cl-defmethod elpaca--delete ((e (elpaca git)))
+  "Delete :type git E."
+  (when-let*  ((recipe (elpaca<-recipe e))
+               (repo (plist-get recipe :repo))
+               ((stringp repo))
+               ((eq (elpaca-git--repo-type repo) 'local)))
+    (setf (elpaca<-source-dir e) (elpaca<-build-dir e)))
+  (cl-call-next-method e))
 
 (cl-defmethod elpaca-build-steps ((e (elpaca git)) &optional context)
   "Return build steps for :type `git` E in CONTEXT."
