@@ -377,7 +377,7 @@ The following keys are recognized:
                (path ,path)
                ((not (file-exists-p path))))
          (with-temp-buffer
-           (make-directory (file-name-directory path) 'parents)
+           (make-directory (file-name-directory (expand-file-name path)) 'parents)
            (insert pkg)
            (write-region (point-min) (point-max) (expand-file-name ,pkgname path)))
        pkg)))
